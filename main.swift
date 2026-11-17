@@ -75,6 +75,19 @@ func sunTimes(for day: Date, lat: Double, lon: Double) -> (rise: Date?, set: Dat
     return (rise, set)
 }
 
+// sunTimes() scans a whole day a minute at a time, so keep the result for the day and
+// place instead of repeating that work on every redraw and every menu update.
+private var cachedSunTimesKey = ""
+private var cachedSunTimesValue: (rise: Date?, set: Date?) = (nil, nil)
+
+func sunTimesCached(for day: Date, lat: Double, lon: Double) -> (rise: Date?, set: Date?) {
+    let key = "\(Calendar.current.startOfDay(for: day).timeIntervalSince1970)|\(lat)|\(lon)"
+    if key == cachedSunTimesKey { return cachedSunTimesValue }
+    cachedSunTimesValue = sunTimes(for: day, lat: lat, lon: lon)
+    cachedSunTimesKey = key
+    return cachedSunTimesValue
+}
+
 // MARK: - Model
 
 enum Preset: String, CaseIterable {
@@ -401,6 +414,14 @@ func drawPreset(_ c: CGContext, preset: Preset, bw: Double, bh: Double, elevN: D
 
 let ciContext = CIContext()
 
+// Building a DateFormatter costs more than formatting with it, so keep one around.
+let hhmmFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "HH:mm"
+    return f
+}()
+
 func renderWall(_ ctx: CGContext, size: CGSize, model: Model, scale: Double) {
     let w = Double(size.width)
     let h = Double(size.height)
@@ -410,7 +431,7 @@ func renderWall(_ ctx: CGContext, size: CGSize, model: Model, scale: Double) {
     let sun = sunPosition(date, lat: model.lat, lon: model.lon)
     let el = sun.elevation
     let cloud = model.cloud
-    let times = sunTimes(for: date, lat: model.lat, lon: model.lon)
+    let times = sunTimesCached(for: date, lat: model.lat, lon: model.lon)
 
     // Progress through the day, 0 at sunrise, 1 at sunset. Drives the patch left to right.
     let p: Double
@@ -587,6 +608,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CLLoca
     var timeLabel = NSTextField()
     let popover = NSPopover()
 
+    var tickTimer: Timer?
+    var weatherTimer: Timer?
+    var screensAsleep = false
+    var menuOpen = false
+    var lastRenderKey = ""
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         buildWindows()
@@ -599,24 +626,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CLLoca
         }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
                                                           object: nil, queue: .main) { [weak self] _ in
+            self?.screensAsleep = false
             self?.fetchWeather()
             self?.refresh()
         }
-
-        Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            if self.model.scrub == nil { self.refresh() }
+        // Nothing drawn while the display is off is ever seen, so stop drawing then.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidSleepNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            self?.screensAsleep = true
         }
-        Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            self?.screensAsleep = false
+            self?.refresh()
+        }
+
+        // The sun moves about a quarter of a degree a minute, so a minute is plenty
+        // often to look at the time; refreshIfNeeded() then decides whether to redraw.
+        tickTimer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+        tickTimer?.tolerance = 10
+        RunLoop.main.add(tickTimer!, forMode: .common)
+
+        weatherTimer = Timer(timeInterval: 15 * 60, repeats: true) { [weak self] _ in
             self?.fetchWeather()
         }
+        weatherTimer?.tolerance = 60
+        RunLoop.main.add(weatherTimer!, forMode: .common)
 
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
-        if model.autoLocation {
-            locationManager.requestWhenInUseAuthorization()
-            locationManager.startUpdatingLocation()
-        }
+        requestOneLocationFix()
         fetchWeather()
         refresh()
     }
@@ -641,14 +682,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CLLoca
             win.orderBack(nil)
             windows.append(win)
         }
+        refresh()
+    }
+
+    /// Everything the picture depends on, at the precision that is actually visible.
+    func renderKey() -> String {
+        let date = model.date
+        let sun = sunPosition(date, lat: model.lat, lon: model.lon)
+        // Well below the horizon the picture is the same whatever the exact time is,
+        // so the whole night folds onto one key and nothing is redrawn until dawn.
+        let sunKey: String
+        if sun.elevation < -8 {
+            sunKey = "night"
+        } else {
+            sunKey = String(format: "%.2f/%.2f", sun.elevation, sun.azimuth)
+        }
+        return "\(sunKey)|\(model.lat)|\(model.lon)|\(model.preset.rawValue)|\(model.cloudMode)"
+            + "|\(model.liveCloud)|\(model.shadowMode)|\(model.brightness)|\(model.replaceMode)"
+            + "|\(windows.count)"
+    }
+
+    /// Redraws only when the image would actually look different.
+    func refreshIfNeeded() {
+        guard renderKey() != lastRenderKey else { return }
+        refresh()
+    }
+
+    /// Once-a-minute tick: cheapest possible path when nothing has changed.
+    func tick() {
+        guard !screensAsleep, model.scrub == nil else { return }
+        refreshIfNeeded()
+        if menuOpen { updateLabels() }   // keep the open menu's clock moving
     }
 
     func refresh() {
+        lastRenderKey = renderKey()
+        applyOpacity()
         for w in windows {
-            w.alphaValue = CGFloat(model.opacity)
             w.contentView?.needsDisplay = true
         }
-        updateLabels()
+    }
+
+    /// Window alpha is compositor work, so changing opacity needs no repaint.
+    func applyOpacity() {
+        for w in windows {
+            w.alphaValue = CGFloat(model.opacity)
+        }
     }
 
     // MARK: Menu
@@ -811,15 +890,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CLLoca
         let c = Calendar.current.dateComponents([.hour, .minute], from: model.date)
         slider.doubleValue = Double((c.hour ?? 0) * 60 + (c.minute ?? 0))
         updateLabels()
+        menuOpen = true
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuOpen = false
     }
 
     func updateLabels() {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "HH:mm"
+        let f = hhmmFormatter
         let date = model.date
         let sun = sunPosition(date, lat: model.lat, lon: model.lon)
-        let times = sunTimes(for: date, lat: model.lat, lon: model.lon)
+        let times = sunTimesCached(for: date, lat: model.lat, lon: model.lon)
         let sky = Int((model.cloud * 100).rounded())
         infoItem.title = "\(f.string(from: date))  ·  sun \(Int(sun.elevation.rounded()))° up  ·  clouds \(sky)%"
         if let r = times.rise, let s = times.set {
@@ -866,7 +948,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CLLoca
     @objc func opacityMoved(_ sender: NSSlider) {
         model.opacity = sender.doubleValue
         model.save()
-        refresh()
+        applyOpacity()
     }
 
     @objc func sliderMoved(_ sender: NSSlider) {
@@ -920,8 +1002,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CLLoca
         if la.isEmpty && lo.isEmpty {
             model.autoLocation = true
             model.save()
-            locationManager.requestWhenInUseAuthorization()
-            locationManager.startUpdatingLocation()
+            requestOneLocationFix()
         } else if let a = Double(la), let b = Double(lo), abs(a) <= 90, abs(b) <= 180 {
             model.autoLocation = false
             model.lat = a
@@ -936,12 +1017,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CLLoca
 
     // MARK: Location
 
+    /// One fix is all this needs: unlike continuous updates it lets the location
+    /// hardware go back to sleep instead of running for as long as the app does.
+    func requestOneLocationFix() {
+        guard model.autoLocation else { return }
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .authorized, .authorizedAlways:
+            locationManager.requestLocation()
+        default:
+            break   // Denied or restricted: stay on the saved or fallback coordinates.
+        }
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard model.autoLocation, let l = locations.last else { return }
         model.lat = l.coordinate.latitude
         model.lon = l.coordinate.longitude
         model.save()
-        manager.stopUpdatingLocation()
         fetchWeather()
         refresh()
     }
@@ -951,10 +1045,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, CLLoca
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        let s = manager.authorizationStatus
-        if model.autoLocation && s == .authorizedAlways {
-            manager.startUpdatingLocation()
-        }
+        requestOneLocationFix()
     }
 
     // MARK: Weather (Open-Meteo, no API key)
