@@ -1,0 +1,5 @@
+# Build output from build.sh
+Sunwall.app/
+
+# macOS
+.DS_Store
