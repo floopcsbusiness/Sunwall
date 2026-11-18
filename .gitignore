@@ -1,5 +1,9 @@
 # Build output from build.sh
 Sunwall.app/
 
+# Build output from windows\build.bat
+windows/Sunwall.exe
+windows/obj/
+
 # macOS
 .DS_Store
