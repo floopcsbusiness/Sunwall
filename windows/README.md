@@ -73,14 +73,34 @@ applied as the window's constant alpha, so dragging that slider never repaints.
 - **Where it draws**: the windows are children of the desktop's own wallpaper window
   (`WorkerW`), so the light sits above your wallpaper and below the desktop icons,
   the same place the Mac version puts it. If Explorer restarts, the windows are
-  recreated on the next tick.
+  recreated on the next tick. When that does not work on a given machine, the app
+  notices the paint never landed and falls back to a plain overlay window kept at the
+  bottom of the z-order.
 - **Blur**: GDI+ has no Gaussian filter, so the light patch is blurred with three box
   passes on the pixels. It looks the same; it is not bit-identical.
 - **DPI**: the offscreen light patch is rendered at half resolution, matching the Mac
   build at 1x, then blurred and scaled up.
 
+## If nothing appears
+
+Run it once from a Command Prompt:
+
+    Sunwall.exe --test
+
+That paints the whole desktop a translucent red for three seconds and then opens a
+diagnostics window, so it is obvious whether the overlay reaches the screen at all.
+
+The same information is in the tray menu (**Diagnostics...**) and in a log file:
+
+    %LOCALAPPDATA%\Sunwall\log.txt
+
+The log records which desktop window the overlay attached to, every window it made,
+and whether the last paint succeeded, with the Windows error code when it did not.
+**Open log** in the menu shows it.
+
 ## Status
 
-This port was written against the macOS source but has not been compiled or run - it
-was built on a Mac, where no Windows toolchain is available. Treat the first build as
-unverified, and expect at most small things to fix rather than a redesign.
+The sources are verified to compile against the Windows desktop framework, and the sun
+position and sunrise/sunset results were checked numerically against the Swift build.
+Running it on real hardware is still the open question: the tray icon, the picture and
+the desktop embedding have not been exercised outside that compiler check.

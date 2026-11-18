@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -38,8 +39,14 @@ namespace Sunwall
         // Set while the machine is asleep; nothing drawn then is ever seen.
         bool asleep;
 
-        public SunwallApp()
+        public SunwallApp(string[] args)
         {
+            bool selfTest = false;
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (string.Equals(args[i], "--test", StringComparison.OrdinalIgnoreCase)) selfTest = true;
+            }
+
             model.Load();
 
             controller = new Controller(this);
@@ -51,8 +58,14 @@ namespace Sunwall
             tray.Visible = true;
             BuildMenu();
 
+            Log.Write("model: preset=" + model.PresetName
+                + " lat=" + model.Lat.ToString("0.####", CultureInfo.InvariantCulture)
+                + " lon=" + model.Lon.ToString("0.####", CultureInfo.InvariantCulture)
+                + " automatic=" + model.AutoLocation);
+
             host.Build();
             Redraw();
+            Log.Write("startup complete");
 
             // The sun moves about a quarter of a degree a minute, so a minute is plenty
             // often to look at the clock; Tick() then decides whether to redraw.
@@ -68,6 +81,23 @@ namespace Sunwall
 
             if (model.AutoLocation) FetchLocation();
             FetchWeather();
+
+            // Started with --test: paint a solid colour, then show the facts, so a
+            // machine where nothing appears still reports what happened.
+            if (selfTest)
+            {
+                Log.Write("self test requested");
+                System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+                t.Interval = 800;
+                t.Tick += delegate
+                {
+                    t.Stop();
+                    t.Dispose();
+                    TestOverlay();
+                    ShowDiagnostics();
+                };
+                t.Start();
+            }
         }
 
         // MARK: Messages
@@ -125,6 +155,84 @@ namespace Sunwall
         {
             lastRenderKey = RenderKey();
             host.Render(model);
+
+            // Drawing inside the desktop window does not work everywhere. If the paint
+            // never reached the screen, stop depending on Explorer's window layout.
+            if (host.PaintFailed && !host.TopLevel)
+            {
+                Log.Write("desktop child windows refused the paint; switching to a top-level overlay");
+                host.BuildTopLevel();
+                host.Render(model);
+            }
+        }
+
+        // Paints a solid colour through the same path the picture uses, so it is obvious
+        // whether the window itself is on screen.
+        void TestOverlay()
+        {
+            Log.Write("test overlay");
+            host.Fill(Color.FromArgb(150, 255, 60, 60));
+            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+            t.Interval = 3000;
+            t.Tick += delegate
+            {
+                t.Stop();
+                t.Dispose();
+                Redraw();
+            };
+            t.Start();
+        }
+
+        void ShowDiagnostics()
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("Sunwall diagnostics");
+            sb.AppendLine();
+            sb.Append(host.Report());
+            sb.AppendLine();
+            DateTime date = model.Date;
+            SunPos sun = Sky.Position(date, model.Lat, model.Lon);
+            sb.AppendLine("time: " + date.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+            sb.AppendLine("location: " + model.Lat.ToString("0.####", CultureInfo.InvariantCulture)
+                + ", " + model.Lon.ToString("0.####", CultureInfo.InvariantCulture)
+                + (model.AutoLocation ? " (automatic)" : " (set by hand)"));
+            sb.AppendLine("sun elevation: " + sun.Elevation.ToString("0.0", CultureInfo.InvariantCulture)
+                + " degrees, azimuth " + sun.Azimuth.ToString("0.0", CultureInfo.InvariantCulture));
+            sb.AppendLine("preset: " + model.PresetName
+                + "   clouds: " + model.CloudMode
+                + "   live cloud: " + model.LiveCloud.ToString("0.00", CultureInfo.InvariantCulture));
+            sb.AppendLine("shadows: " + model.ShadowMode
+                + "   brightness: " + model.Brightness.ToString("0.00", CultureInfo.InvariantCulture)
+                + "   opacity: " + model.Opacity.ToString("0.00", CultureInfo.InvariantCulture)
+                + "   full wallpaper: " + model.ReplaceMode);
+            sb.AppendLine("render key: " + lastRenderKey);
+            sb.AppendLine();
+            sb.AppendLine("log file: " + Log.FilePath);
+
+            Form f = new Form();
+            f.Text = "Sunwall diagnostics";
+            f.ClientSize = new Size(640, 440);
+            f.StartPosition = FormStartPosition.CenterScreen;
+            TextBox box = new TextBox();
+            box.Multiline = true;
+            box.ReadOnly = true;
+            box.WordWrap = false;
+            box.ScrollBars = ScrollBars.Both;
+            box.Dock = DockStyle.Fill;
+            box.Font = new Font("Consolas", 9f);
+            box.Text = sb.ToString();
+            f.Controls.Add(box);
+            f.Show();
+            f.Activate();
+        }
+
+        void OpenLog()
+        {
+            try
+            {
+                System.Diagnostics.Process.Start("notepad.exe", "\"" + Log.FilePath + "\"");
+            }
+            catch (Exception) { }
         }
 
         void Tick()
@@ -231,6 +339,18 @@ namespace Sunwall
             loginItem = new ToolStripMenuItem("Launch at login");
             loginItem.Click += delegate { ToggleLogin(); };
             menu.Items.Add(loginItem);
+
+            ToolStripMenuItem testItem = new ToolStripMenuItem("Test overlay (3 seconds)");
+            testItem.Click += delegate { TestOverlay(); };
+            menu.Items.Add(testItem);
+
+            ToolStripMenuItem diagItem = new ToolStripMenuItem("Diagnostics...");
+            diagItem.Click += delegate { ShowDiagnostics(); };
+            menu.Items.Add(diagItem);
+
+            ToolStripMenuItem logItem = new ToolStripMenuItem("Open log");
+            logItem.Click += delegate { OpenLog(); };
+            menu.Items.Add(logItem);
 
             menu.Items.Add(new ToolStripSeparator());
             ToolStripMenuItem quit = new ToolStripMenuItem("Quit Sunwall");
