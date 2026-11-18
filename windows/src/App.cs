@@ -30,6 +30,7 @@ namespace Sunwall
         ToolStripMenuItem liveItem;
         ToolStripMenuItem loginItem;
         ToolStripMenuItem replaceItem;
+        ToolStripMenuItem layerItem;
         SlidersForm sliders;
         LocationForm locationForm;
         string lastRenderKey = "";
@@ -63,7 +64,8 @@ namespace Sunwall
                 + " lon=" + model.Lon.ToString("0.####", CultureInfo.InvariantCulture)
                 + " automatic=" + model.AutoLocation);
 
-            host.Build();
+            if (model.DesktopLayer) host.Build();
+            else host.BuildTopLevel();
             Redraw();
             Log.Write("startup complete");
 
@@ -163,6 +165,12 @@ namespace Sunwall
                 Log.Write("desktop child windows refused the paint; switching to a top-level overlay");
                 host.BuildTopLevel();
                 host.Render(model);
+                // Remember it, so the next run starts in the mode that works here.
+                if (model.DesktopLayer)
+                {
+                    model.DesktopLayer = false;
+                    model.Save();
+                }
             }
         }
 
@@ -188,6 +196,8 @@ namespace Sunwall
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("Sunwall diagnostics");
             sb.AppendLine();
+            sb.AppendLine("windows: " + Environment.OSVersion.VersionString
+                + ", 64-bit process: " + (IntPtr.Size == 8));
             sb.Append(host.Report());
             sb.AppendLine();
             DateTime date = model.Date;
@@ -340,6 +350,17 @@ namespace Sunwall
             loginItem.Click += delegate { ToggleLogin(); };
             menu.Items.Add(loginItem);
 
+            layerItem = new ToolStripMenuItem("Draw behind desktop icons");
+            layerItem.Click += delegate
+            {
+                model.DesktopLayer = !model.DesktopLayer;
+                model.Save();
+                if (model.DesktopLayer) host.Build();
+                else host.BuildTopLevel();
+                Redraw();
+            };
+            menu.Items.Add(layerItem);
+
             ToolStripMenuItem testItem = new ToolStripMenuItem("Test overlay (3 seconds)");
             testItem.Click += delegate { TestOverlay(); };
             menu.Items.Add(testItem);
@@ -370,6 +391,7 @@ namespace Sunwall
             for (int i = 0; i < shadowItems.Count; i++) shadowItems[i].Checked = model.ShadowMode == i;
             liveItem.Checked = !model.Scrub.HasValue;
             replaceItem.Checked = model.ReplaceMode;
+            layerItem.Checked = model.DesktopLayer;
             loginItem.Checked = IsLoginEnabled();
         }
 

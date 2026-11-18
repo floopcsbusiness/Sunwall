@@ -35,6 +35,7 @@ namespace Sunwall
         public double Brightness = 1.0;   // 0.3 ... 1.8
         public double Opacity = 1.0;      // 0.1 ... 1
         public bool ReplaceMode;       // false = overlay on wallpaper, true = solid wall
+        public bool DesktopLayer;      // true = draw inside the desktop window, behind the icons
         public double LiveCloud;       // 0 ... 1 from the weather API
 
         public DateTime Date
@@ -98,6 +99,7 @@ namespace Sunwall
                     Brightness = ReadDouble(k, "brightness", Brightness);
                     Opacity = ReadDouble(k, "opacity", Opacity);
                     ReplaceMode = ReadInt(k, "replaceMode", ReplaceMode ? 1 : 0) != 0;
+                    DesktopLayer = ReadInt(k, "desktopLayer", DesktopLayer ? 1 : 0) != 0;
                 }
             }
             catch (Exception) { /* First run, or a locked registry: defaults stand. */ }
@@ -119,6 +121,7 @@ namespace Sunwall
                     k.SetValue("brightness", Brightness.ToString("R", CultureInfo.InvariantCulture), RegistryValueKind.String);
                     k.SetValue("opacity", Opacity.ToString("R", CultureInfo.InvariantCulture), RegistryValueKind.String);
                     k.SetValue("replaceMode", ReplaceMode ? 1 : 0, RegistryValueKind.DWord);
+                    k.SetValue("desktopLayer", DesktopLayer ? 1 : 0, RegistryValueKind.DWord);
                 }
             }
             catch (Exception) { /* Nothing worth failing over. */ }

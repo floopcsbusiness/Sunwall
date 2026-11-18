@@ -70,12 +70,13 @@ applied as the window's constant alpha, so dragging that slider never repaints.
 - **Location**: there is no CoreLocation here. Sunwall asks `ipapi.co` once for an
   approximate position and otherwise uses the coordinates you enter. Nothing is sent
   anywhere except that request and the Open-Meteo cloud-cover lookup.
-- **Where it draws**: the windows are children of the desktop's own wallpaper window
-  (`WorkerW`), so the light sits above your wallpaper and below the desktop icons,
-  the same place the Mac version puts it. If Explorer restarts, the windows are
-  recreated on the next tick. When that does not work on a given machine, the app
-  notices the paint never landed and falls back to a plain overlay window kept at the
-  bottom of the z-order.
+- **Where it draws**: by default the light is an overlay window kept at the bottom of the
+  z-order. That works on any Windows install and sits over the wallpaper, above the
+  desktop icons. **Draw behind desktop icons** in the menu moves it inside the desktop's
+  own wallpaper window (`WorkerW`) instead, under the icons, which is where the Mac
+  version puts it - but that depends on Explorer's window layout and does not work
+  everywhere. If the paint cannot land there, the app switches back by itself and
+  remembers the choice.
 - **Blur**: GDI+ has no Gaussian filter, so the light patch is blurred with three box
   passes on the pixels. It looks the same; it is not bit-identical.
 - **DPI**: the offscreen light patch is rendered at half resolution, matching the Mac

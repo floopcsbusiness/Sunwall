@@ -14,6 +14,7 @@ namespace Sunwall
         public IntPtr Handle = IntPtr.Zero;
         public Rectangle Bounds;
         public Bitmap Surface;
+        public bool TopLevel;
         public bool LastPaintOk;
         public int LastError;
 
@@ -23,6 +24,8 @@ namespace Sunwall
             EnsureSurface();
             if (Surface == null) return;
             WallRenderer.Render(Surface, m);
+            // Other windows come and go; keep an overlay window underneath them.
+            if (TopLevel) Native.SendToBottom(Handle, Bounds);
             Paint(m.Opacity);
         }
 
@@ -49,8 +52,13 @@ namespace Sunwall
                 LastError = 0;
                 return;
             }
+            // A top-level window gets its position spelled out every time. A child of the
+            // desktop keeps the parent-relative position it was given.
             int error;
-            LastPaintOk = Native.BlitLayered(Handle, Surface, opacity, out error);
+            if (TopLevel)
+                LastPaintOk = Native.BlitLayeredAt(Handle, Surface, opacity, Bounds.Left, Bounds.Top, out error);
+            else
+                LastPaintOk = Native.BlitLayered(Handle, Surface, opacity, out error);
             LastError = error;
         }
     }
@@ -114,6 +122,7 @@ namespace Sunwall
             {
                 WallWindow w = new WallWindow();
                 w.Bounds = monitors[i];
+                w.TopLevel = TopLevel;
                 w.Handle = Native.CreateWallWindow(TopLevel ? IntPtr.Zero : Parent, monitors[i], TopLevel);
                 windows.Add(w);
             }
@@ -325,6 +334,18 @@ namespace Sunwall
             ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc, uint crKey,
             ref BLENDFUNCTION pblend, uint dwFlags);
 
+        [DllImport("user32.dll", EntryPoint = "UpdateLayeredWindow", SetLastError = true)]
+        static extern bool UpdateLayeredWindowPos(IntPtr hwnd, IntPtr hdcDst, ref POINT pptDst,
+            ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc, uint crKey,
+            ref BLENDFUNCTION pblend, uint dwFlags);
+
+        public static void SendToBottom(IntPtr hwnd, Rectangle bounds)
+        {
+            if (hwnd == IntPtr.Zero) return;
+            SetWindowPos(hwnd, HWND_BOTTOM, bounds.Left, bounds.Top,
+                bounds.Width, bounds.Height, SWP_NOACTIVATE);
+        }
+
         // Held in static fields so the GC cannot collect the thunks while Windows
         // still holds the pointers.
         static WndProcDelegate wndProc;
@@ -466,6 +487,16 @@ namespace Sunwall
         // does not paint, exactly like the transparent CoreGraphics layer.
         public static bool BlitLayered(IntPtr hwnd, Bitmap bmp, double opacity, out int error)
         {
+            return Blit(hwnd, bmp, opacity, false, 0, 0, out error);
+        }
+
+        public static bool BlitLayeredAt(IntPtr hwnd, Bitmap bmp, double opacity, int x, int y, out int error)
+        {
+            return Blit(hwnd, bmp, opacity, true, x, y, out error);
+        }
+
+        static bool Blit(IntPtr hwnd, Bitmap bmp, double opacity, bool usePosition, int x, int y, out int error)
+        {
             error = 0;
             IntPtr screenDc = GetDC(IntPtr.Zero);
             IntPtr memDc = CreateCompatibleDC(screenDc);
@@ -488,8 +519,19 @@ namespace Sunwall
                 if (a > 1) a = 1;
                 blend.SourceConstantAlpha = (byte)(a * 255.0 + 0.5);
                 blend.AlphaFormat = AC_SRC_ALPHA;
-                ok = UpdateLayeredWindowNoPos(hwnd, screenDc, IntPtr.Zero, ref size, memDc, ref src,
-                    0, ref blend, ULW_ALPHA);
+                if (usePosition)
+                {
+                    POINT dst;
+                    dst.X = x;
+                    dst.Y = y;
+                    ok = UpdateLayeredWindowPos(hwnd, screenDc, ref dst, ref size, memDc, ref src,
+                        0, ref blend, ULW_ALPHA);
+                }
+                else
+                {
+                    ok = UpdateLayeredWindowNoPos(hwnd, screenDc, IntPtr.Zero, ref size, memDc, ref src,
+                        0, ref blend, ULW_ALPHA);
+                }
                 error = Marshal.GetLastWin32Error();
             }
             finally
